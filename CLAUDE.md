@@ -22,7 +22,7 @@ Brain Cabinet v2は「自分の判断力が育つ道具」。日記でもTODOで
 | レイヤー | 技術 |
 |---------|------|
 | API | Hono (Node.js) |
-| DB | PostgreSQL + pgvector |
+| DB | SQLite (better-sqlite3) + Drizzle ORM — data/brain-cabinet.db |
 | Embedding | MiniLM (@xenova/transformers) 384次元・完全ローカル |
 | フロント | React (Vite) |
 | ジョブ | node-cron |
@@ -37,7 +37,7 @@ src/
 ├── index.ts              # サーバーエントリ (Hono + cron起動)
 ├── db/
 │   ├── schema.ts         # 5テーブル定義 (Drizzle ORM)
-│   └── client.ts         # PostgreSQL接続
+│   └── client.ts         # SQLite接続 (data/brain-cabinet.db)
 ├── routes/
 │   └── command.ts        # POST /api/v1 Command API
 ├── dispatchers/
@@ -67,7 +67,7 @@ ui/
 | テーブル | 層 | 目的 |
 |---------|-----|------|
 | notes | 写す | メモ本体 + 自動推論結果 (type, confidence, decay_profile) |
-| note_embeddings | 写す | MiniLM 384次元ベクトル (pgvector) |
+| note_embeddings | 写す | MiniLM 384次元ベクトル (JSON文字列で保存、アプリ側でコサイン類似度計算) |
 | drift_events | 検知 | 検出されたドリフトイベント |
 | review_schedules | 修正 | SM-2パラメータ + 次回レビュー日 |
 | review_sessions | 修正 | レビュー実績 (quality + response) |
@@ -94,16 +94,15 @@ ui/
 ## 開発コマンド
 
 ```bash
-# バックエンド
-npm install
-npm run dev          # tsx watch src/index.ts
+# 初回セットアップ
+npm install && cd ui && npm install && cd ..
 
 # DB マイグレーション
 npm run db:generate  # drizzle-kit generate
-npm run db:migrate   # drizzle-kit migrate
+npm run db:migrate   # drizzle-kit migrate (data/brain-cabinet.db に作成)
 
-# フロントエンド
-cd ui && npm install && npm run dev
+# 起動（バックエンド:3000 + フロントエンド:5173 同時起動）
+npm run dev
 
 # Cloudflare Tunnel
 cloudflared tunnel run brain-cabinet
@@ -115,6 +114,7 @@ cloudflared tunnel run brain-cabinet
 2. **外部AI依存ゼロ** — Embedding含めすべてローカル処理
 3. **Command APIパターン** — 単一エンドポイント `POST /api/v1 { action, payload }`
 4. **v1からの移植** — 推論ルール (inferNoteType)、SM-2アルゴリズムはv1のドメインロジックを移植
+5. **SQLiteで始めてスケール時にPostgreSQL+pgvectorへ移行** — サービス層は変わらない
 
 ## v1との関係
 
@@ -126,6 +126,7 @@ v1の38テーブル・100+アクションから93%削減。
 | トリガー | 追加 |
 |---------|------|
 | ユーザー増 | Clerk認証 + RLS |
+| ベクトル検索高速化 | sqlite-vec or PostgreSQL+pgvector |
 | ノート1万超 | K-Meansクラスタリング |
 | 判断の質向上 | 反証記録テーブル |
 | 思考の系譜 | 影響ネットワーク |
