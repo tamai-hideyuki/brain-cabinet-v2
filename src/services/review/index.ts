@@ -6,6 +6,10 @@
 import { db } from "../../db/client.js";
 import { reviewSchedules, reviewSessions, notes } from "../../db/schema.js";
 import { eq, lte } from "drizzle-orm";
+import { createLogger } from "../../lib/logger.js";
+import { NotFoundError } from "../../lib/errors.js";
+
+const log = createLogger("review");
 
 /**
  * SM-2アルゴリズム
@@ -67,6 +71,7 @@ export async function getNextReviews(limit = 10) {
     .orderBy(reviewSchedules.nextReviewAt)
     .limit(limit);
 
+  log.info("fetched review queue", { due: results.length, limit });
   return results;
 }
 
@@ -81,6 +86,8 @@ export async function submitReview(params: {
 }) {
   const { noteId, quality, response } = params;
 
+  log.info("submitting review", { noteId, quality, hasResponse: !!response });
+
   // セッション記録
   const [session] = await db
     .insert(reviewSessions)
@@ -94,7 +101,7 @@ export async function submitReview(params: {
     .where(eq(reviewSchedules.noteId, noteId));
 
   if (!current) {
-    throw new Error(`No review schedule found for note ${noteId}`);
+    throw new NotFoundError("review schedule", noteId);
   }
 
   // SM-2再計算
@@ -119,9 +126,18 @@ export async function submitReview(params: {
     })
     .where(eq(reviewSchedules.noteId, noteId));
 
+  log.info("SM-2 recalculated", {
+    noteId,
+    interval: `${updated.intervalDays}d`,
+    EF: updated.easinessFactor,
+    rep: updated.repetitionCount,
+    nextReview: nextReview.toISOString().split("T")[0],
+  });
+
   // response があれば新ノートとして作成（ループの「再び写す」）
   let newNote = null;
   if (response && response.trim()) {
+    log.info("creating response note (loop restart)", { noteId });
     const { createNote } = await import("../note/index.js");
     newNote = await createNote(response);
   }

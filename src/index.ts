@@ -4,6 +4,9 @@ import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { command } from "./routes/command.js";
 import { startCronJobs } from "./cron/index.js";
+import { createLogger } from "./lib/logger.js";
+
+const log = createLogger("server");
 
 const app = new Hono();
 
@@ -21,7 +24,8 @@ app.get("/ui/*", serveStatic({ root: "./ui/dist", rewriteRequestPath: () => "/in
 const port = Number(process.env.PORT) || 3000;
 
 serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`Brain Cabinet v2 running on http://localhost:${info.port}`);
+  log.info(`listening on http://localhost:${info.port}`);
 });
 
 startCronJobs();
+log.info("Brain Cabinet v2 started");

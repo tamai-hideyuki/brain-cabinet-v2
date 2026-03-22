@@ -3,6 +3,9 @@ import { notes, noteEmbeddings, reviewSchedules } from "../../db/schema.js";
 import { eq, isNull, sql, desc } from "drizzle-orm";
 import { generateEmbedding } from "../embedding/index.js";
 import { inferNoteType } from "../inference/index.js";
+import { createLogger } from "../../lib/logger.js";
+
+const log = createLogger("note");
 
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0, normA = 0, normB = 0;
@@ -15,7 +18,12 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 export async function createNote(content: string) {
+  const timer = log.time("create");
+
+  log.info("inferring note type...");
   const inference = inferNoteType(content);
+
+  log.info("generating embedding...");
   const embedding = await generateEmbedding(content);
 
   const [note] = await db
@@ -35,6 +43,8 @@ export async function createNote(content: string) {
     embedding: JSON.stringify(embedding),
   });
 
+  log.info("saved note + embedding", { id: note.id, type: note.type });
+
   // decision / learning は自動でレビュースケジュールに登録
   if (inference.type === "decision" || inference.type === "learning") {
     const nextReview = new Date();
@@ -43,12 +53,15 @@ export async function createNote(content: string) {
       noteId: note.id,
       nextReviewAt: nextReview.toISOString(),
     });
+    log.info("scheduled review (SM-2 initial: +1d)", { noteId: note.id });
   }
 
+  timer.end({ id: note.id, type: note.type, decay: note.decayProfile });
   return note;
 }
 
 export async function getNote(id: string) {
+  log.debug("get", { id });
   const result = await db
     .select()
     .from(notes)
@@ -82,6 +95,7 @@ export async function listNotes(params: {
     .from(notes)
     .where(sql`${sql.join(conditions, sql` AND `)}`);
 
+  log.debug("list", { returned: rows.length, total: Number(count), type: type ?? "all" });
   return { notes: rows, total: Number(count) };
 }
 
@@ -91,6 +105,9 @@ export async function listNotes(params: {
  * ノート数が数千を超えたらsqlite-vecに移行
  */
 export async function searchNotes(query: string, limit = 10) {
+  const timer = log.time("semantic search");
+
+  log.info("generating query embedding...");
   const queryEmbedding = await generateEmbedding(query);
 
   const allRows = await db
@@ -101,6 +118,8 @@ export async function searchNotes(query: string, limit = 10) {
     .from(noteEmbeddings)
     .innerJoin(notes, eq(noteEmbeddings.noteId, notes.id))
     .where(isNull(notes.deletedAt));
+
+  log.info("computing cosine similarity", { candidates: allRows.length });
 
   const scored = allRows
     .map((row) => ({
@@ -118,5 +137,6 @@ export async function searchNotes(query: string, limit = 10) {
     }
   }
 
+  timer.end({ query: query.slice(0, 40), candidates: allRows.length, results: results.length });
   return results;
 }

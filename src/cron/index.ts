@@ -1,17 +1,24 @@
 import cron from "node-cron";
 import { computeDrift } from "../services/drift/index.js";
+import { createLogger } from "../lib/logger.js";
+
+const log = createLogger("cron");
 
 export function startCronJobs() {
   // 毎日 03:00 にドリフト検出を実行
   cron.schedule("0 3 * * *", async () => {
-    console.log("[cron] drift.compute started");
+    log.info("drift.compute triggered (scheduled)");
     try {
       const result = await computeDrift();
-      console.log("[cron] drift.compute done:", result);
+      log.info("drift.compute completed", {
+        detected: result.detected,
+        events: "events" in result ? (result as any).events?.length ?? 0 : 0,
+      });
     } catch (e) {
-      console.error("[cron] drift.compute error:", e);
+      const message = e instanceof Error ? e.message : String(e);
+      log.error("drift.compute failed", { error: message });
     }
   });
 
-  console.log("[cron] Scheduled: drift.compute at 03:00 daily");
+  log.info("scheduled: drift.compute at 03:00 daily");
 }

@@ -6,6 +6,9 @@
 import { db } from "../../db/client.js";
 import { notes, noteEmbeddings, driftEvents } from "../../db/schema.js";
 import { desc, eq, and, gte, lt, isNull } from "drizzle-orm";
+import { createLogger } from "../../lib/logger.js";
+
+const log = createLogger("drift");
 
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0, normA = 0, normB = 0;
@@ -40,6 +43,9 @@ function mean(vectors: number[][]): number[] {
  * - over_focus: centroidの移動が小さすぎる（視野が狭い）
  */
 export async function computeDrift(windowDays = 7) {
+  const timer = log.time("compute");
+  log.info("starting drift detection", { windowDays });
+
   const now = new Date();
   const windowStart = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
   const prevStart = new Date(windowStart.getTime() - windowDays * 24 * 60 * 60 * 1000);
@@ -76,7 +82,11 @@ export async function computeDrift(windowDays = 7) {
       isNull(notes.deletedAt),
     ));
 
+  log.info("loaded windows", { recent: recent.length, prev: prev.length });
+
   if (recent.length < 3) {
+    log.info("skipped: not enough data", { recent: recent.length, required: 3 });
+    timer.end({ detected: false });
     return { detected: false, reason: "not_enough_data" };
   }
 
@@ -92,6 +102,8 @@ export async function computeDrift(windowDays = 7) {
   // 1. Stagnation / Divergence: 分散を計算
   const similarities = recentEmbeddings.map((e) => cosineSimilarity(e, recentCentroid));
   const avgSim = similarities.reduce((a, b) => a + b, 0) / similarities.length;
+
+  log.debug("similarity analysis", { avgSim: avgSim.toFixed(4) });
 
   if (avgSim > 0.92) {
     events.push({
@@ -117,6 +129,7 @@ export async function computeDrift(windowDays = 7) {
   const maxTypeRatio = Math.max(...Object.values(typeCounts)) / recent.length;
   if (maxTypeRatio > 0.8 && recent.length >= 5) {
     const dominantType = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0][0];
+    log.info("cluster bias detected", { dominantType, ratio: maxTypeRatio.toFixed(2) });
     events.push({
       driftType: "cluster_bias",
       severity: maxTypeRatio > 0.9 ? "high" : "mid",
@@ -130,6 +143,8 @@ export async function computeDrift(windowDays = 7) {
     const prevCentroid = mean(prevEmbeddings);
     const centroidShift = 1 - cosineSimilarity(recentCentroid, prevCentroid);
 
+    log.debug("centroid shift", { shift: centroidShift.toFixed(4) });
+
     if (centroidShift < 0.02) {
       events.push({
         driftType: "over_focus",
@@ -139,6 +154,7 @@ export async function computeDrift(windowDays = 7) {
     }
 
     if (centroidShift > 0.3) {
+      log.info("drift drop detected", { centroidShift: centroidShift.toFixed(4) });
       events.push({
         driftType: "drift_drop",
         severity: centroidShift > 0.5 ? "high" : "mid",
@@ -156,10 +172,21 @@ export async function computeDrift(windowDays = 7) {
     });
   }
 
+  if (events.length > 0) {
+    log.warn("drift detected", {
+      count: events.length,
+      types: events.map((e) => `${e.driftType}(${e.severity})`).join(", "),
+    });
+  } else {
+    log.info("no drift detected");
+  }
+
+  timer.end({ detected: events.length > 0, events: events.length });
   return { detected: events.length > 0, events };
 }
 
 export async function listDriftEvents(limit = 20) {
+  log.debug("listing events", { limit });
   const rows = await db
     .select()
     .from(driftEvents)
@@ -173,6 +200,7 @@ export async function listDriftEvents(limit = 20) {
 }
 
 export async function acknowledgeDrift(id: string) {
+  log.info("acknowledging drift event", { id });
   await db
     .update(driftEvents)
     .set({ acknowledged: true })

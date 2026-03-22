@@ -3,6 +3,10 @@
  * 「写す」の核心：書いた瞬間に「これは判断だ」と映し出す
  */
 
+import { createLogger } from "../../lib/logger.js";
+
+const log = createLogger("inference");
+
 type NoteType = "decision" | "learning" | "scratch" | "emotion" | "log";
 type DecayProfile = "stable" | "exploratory" | "situational";
 
@@ -117,11 +121,19 @@ export function inferNoteType(content: string): InferenceResult {
   const experiential = 0.1;
   const temporal = 0.1;
 
-  return {
+  const result: InferenceResult = {
     type,
     confidenceStructural: Math.round(structural * 100) / 100,
     confidenceExperiential: Math.round(experiential * 100) / 100,
     confidenceTemporal: Math.round(temporal * 100) / 100,
     decayProfile: inferDecayProfile(type, content),
   };
+
+  log.info(`inferred type=${result.type}`, {
+    confidence: result.confidenceStructural,
+    decay: result.decayProfile,
+    scores: Object.entries(scores).filter(([, v]) => v > 0).map(([k, v]) => `${k}:${v}`).join(","),
+  });
+
+  return result;
 }
