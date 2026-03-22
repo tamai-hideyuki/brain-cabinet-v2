@@ -1,8 +1,18 @@
 import { db } from "../../db/client.js";
-import { notes, noteEmbeddings } from "../../db/schema.js";
+import { notes, noteEmbeddings, reviewSchedules } from "../../db/schema.js";
 import { eq, isNull, sql, desc } from "drizzle-orm";
 import { generateEmbedding } from "../embedding/index.js";
 import { inferNoteType } from "../inference/index.js";
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
 
 export async function createNote(content: string) {
   const inference = inferNoteType(content);
@@ -22,17 +32,16 @@ export async function createNote(content: string) {
 
   await db.insert(noteEmbeddings).values({
     noteId: note.id,
-    embedding,
+    embedding: JSON.stringify(embedding),
   });
 
   // decision / learning は自動でレビュースケジュールに登録
   if (inference.type === "decision" || inference.type === "learning") {
-    const { reviewSchedules } = await import("../../db/schema.js");
     const nextReview = new Date();
     nextReview.setDate(nextReview.getDate() + 1); // SM-2初回: 1日後
     await db.insert(reviewSchedules).values({
       noteId: note.id,
-      nextReviewAt: nextReview,
+      nextReviewAt: nextReview.toISOString(),
     });
   }
 
@@ -76,20 +85,38 @@ export async function listNotes(params: {
   return { notes: rows, total: Number(count) };
 }
 
+/**
+ * セマンティック検索 — アプリ側でコサイン類似度を計算
+ * SQLiteにベクトル演算がないため、全embeddingを取得して比較する
+ * ノート数が数千を超えたらsqlite-vecに移行
+ */
 export async function searchNotes(query: string, limit = 10) {
   const queryEmbedding = await generateEmbedding(query);
-  const vectorStr = `[${queryEmbedding.join(",")}]`;
 
-  const results = await db.execute(sql`
-    SELECT
-      n.*,
-      1 - (ne.embedding <=> ${vectorStr}::vector) AS similarity
-    FROM notes n
-    JOIN note_embeddings ne ON ne.note_id = n.id
-    WHERE n.deleted_at IS NULL
-    ORDER BY ne.embedding <=> ${vectorStr}::vector
-    LIMIT ${limit}
-  `);
+  const allRows = await db
+    .select({
+      noteId: noteEmbeddings.noteId,
+      embedding: noteEmbeddings.embedding,
+    })
+    .from(noteEmbeddings)
+    .innerJoin(notes, eq(noteEmbeddings.noteId, notes.id))
+    .where(isNull(notes.deletedAt));
 
-  return results as unknown as Record<string, unknown>[];
+  const scored = allRows
+    .map((row) => ({
+      noteId: row.noteId,
+      similarity: cosineSimilarity(queryEmbedding, JSON.parse(row.embedding)),
+    }))
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, limit);
+
+  const results = [];
+  for (const { noteId, similarity } of scored) {
+    const [note] = await db.select().from(notes).where(eq(notes.id, noteId));
+    if (note) {
+      results.push({ ...note, similarity });
+    }
+  }
+
+  return results;
 }

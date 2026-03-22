@@ -4,15 +4,8 @@
  */
 
 import { db } from "../../db/client.js";
-import { driftEvents } from "../../db/schema.js";
-import { sql, desc, eq } from "drizzle-orm";
-
-interface EmbeddingRow {
-  note_id: string;
-  embedding: number[];
-  type: string;
-  created_at: Date;
-}
+import { notes, noteEmbeddings, driftEvents } from "../../db/schema.js";
+import { desc, eq, and, gte, lt, isNull } from "drizzle-orm";
 
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0, normA = 0, normB = 0;
@@ -51,25 +44,37 @@ export async function computeDrift(windowDays = 7) {
   const windowStart = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
   const prevStart = new Date(windowStart.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
-  // 直近ウィンドウのembeddings取得
-  const recentRows = await db.execute(sql`
-    SELECT ne.note_id, ne.embedding, n.type, n.created_at
-    FROM note_embeddings ne
-    JOIN notes n ON n.id = ne.note_id
-    WHERE n.created_at >= ${windowStart} AND n.deleted_at IS NULL
-    ORDER BY n.created_at DESC
-  `);
+  const windowStartStr = windowStart.toISOString();
+  const prevStartStr = prevStart.toISOString();
 
-  // 前ウィンドウのembeddings取得
-  const prevRows = await db.execute(sql`
-    SELECT ne.note_id, ne.embedding, n.type, n.created_at
-    FROM note_embeddings ne
-    JOIN notes n ON n.id = ne.note_id
-    WHERE n.created_at >= ${prevStart} AND n.created_at < ${windowStart} AND n.deleted_at IS NULL
-  `);
+  // 直近ウィンドウ
+  const recent = await db
+    .select({
+      noteId: noteEmbeddings.noteId,
+      embedding: noteEmbeddings.embedding,
+      type: notes.type,
+      createdAt: notes.createdAt,
+    })
+    .from(noteEmbeddings)
+    .innerJoin(notes, eq(noteEmbeddings.noteId, notes.id))
+    .where(and(gte(notes.createdAt, windowStartStr), isNull(notes.deletedAt)))
+    .orderBy(desc(notes.createdAt));
 
-  const recent = recentRows as unknown as EmbeddingRow[];
-  const prev = prevRows as unknown as EmbeddingRow[];
+  // 前ウィンドウ
+  const prev = await db
+    .select({
+      noteId: noteEmbeddings.noteId,
+      embedding: noteEmbeddings.embedding,
+      type: notes.type,
+      createdAt: notes.createdAt,
+    })
+    .from(noteEmbeddings)
+    .innerJoin(notes, eq(noteEmbeddings.noteId, notes.id))
+    .where(and(
+      gte(notes.createdAt, prevStartStr),
+      lt(notes.createdAt, windowStartStr),
+      isNull(notes.deletedAt),
+    ));
 
   if (recent.length < 3) {
     return { detected: false, reason: "not_enough_data" };
@@ -81,11 +86,7 @@ export async function computeDrift(windowDays = 7) {
     detail: Record<string, unknown>;
   }> = [];
 
-  const recentEmbeddings = recent.map((r) =>
-    typeof r.embedding === "string"
-      ? (r.embedding as string).slice(1, -1).split(",").map(Number)
-      : r.embedding
-  );
+  const recentEmbeddings = recent.map((r) => JSON.parse(r.embedding) as number[]);
   const recentCentroid = mean(recentEmbeddings);
 
   // 1. Stagnation / Divergence: 分散を計算
@@ -125,11 +126,7 @@ export async function computeDrift(windowDays = 7) {
 
   // 3. Over Focus / Drift Drop: centroid移動量
   if (prev.length >= 3) {
-    const prevEmbeddings = prev.map((r) =>
-      typeof r.embedding === "string"
-        ? (r.embedding as string).slice(1, -1).split(",").map(Number)
-        : r.embedding
-    );
+    const prevEmbeddings = prev.map((r) => JSON.parse(r.embedding) as number[]);
     const prevCentroid = mean(prevEmbeddings);
     const centroidShift = 1 - cosineSimilarity(recentCentroid, prevCentroid);
 
@@ -155,7 +152,7 @@ export async function computeDrift(windowDays = 7) {
     await db.insert(driftEvents).values({
       driftType: event.driftType,
       severity: event.severity,
-      detailJson: event.detail,
+      detailJson: JSON.stringify(event.detail),
     });
   }
 
@@ -163,18 +160,27 @@ export async function computeDrift(windowDays = 7) {
 }
 
 export async function listDriftEvents(limit = 20) {
-  return db
+  const rows = await db
     .select()
     .from(driftEvents)
     .orderBy(desc(driftEvents.detectedAt))
     .limit(limit);
+
+  return rows.map((r) => ({
+    ...r,
+    detailJson: r.detailJson ? JSON.parse(r.detailJson) : null,
+  }));
 }
 
 export async function acknowledgeDrift(id: string) {
-  const [updated] = await db
+  await db
     .update(driftEvents)
     .set({ acknowledged: true })
-    .where(eq(driftEvents.id, id))
-    .returning();
+    .where(eq(driftEvents.id, id));
+
+  const [updated] = await db
+    .select()
+    .from(driftEvents)
+    .where(eq(driftEvents.id, id));
   return updated;
 }

@@ -3,4 +3,5 @@ dist/
 ui/dist/
 .env
 *.log
+data/
 .DS_Store

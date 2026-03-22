@@ -1,38 +1,15 @@
 import {
-  pgTable,
+  sqliteTable,
   text,
-  timestamp,
   real,
   integer,
-  jsonb,
-  boolean,
-  uuid,
-  customType,
-} from "drizzle-orm/pg-core";
-
-// pgvector custom type
-const vector = customType<{ data: number[]; dpiverType: string }>({
-  dataType() {
-    return "vector(384)";
-  },
-  toDriver(value: number[]) {
-    return `[${value.join(",")}]`;
-  },
-  fromDriver(value: unknown) {
-    if (typeof value === "string") {
-      return value
-        .slice(1, -1)
-        .split(",")
-        .map(Number);
-    }
-    return value as number[];
-  },
-});
+} from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 // ========== 写す層 ==========
 
-export const notes = pgTable("notes", {
-  id: uuid("id").defaultRandom().primaryKey(),
+export const notes = sqliteTable("notes", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   content: text("content").notNull(),
   type: text("type", {
     enum: ["decision", "learning", "scratch", "emotion", "log"],
@@ -43,53 +20,53 @@ export const notes = pgTable("notes", {
   decayProfile: text("decay_profile", {
     enum: ["stable", "exploratory", "situational"],
   }).notNull().default("exploratory"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-  deletedAt: timestamp("deleted_at"),
+  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+  updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  deletedAt: text("deleted_at"),
 });
 
-export const noteEmbeddings = pgTable("note_embeddings", {
-  noteId: uuid("note_id")
+export const noteEmbeddings = sqliteTable("note_embeddings", {
+  noteId: text("note_id")
     .primaryKey()
     .references(() => notes.id, { onDelete: "cascade" }),
-  embedding: vector("embedding").notNull(),
+  embedding: text("embedding").notNull(), // JSON string of float array
   modelVersion: text("model_version").notNull().default("Xenova/all-MiniLM-L6-v2"),
 });
 
 // ========== 検知層 ==========
 
-export const driftEvents = pgTable("drift_events", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  detectedAt: timestamp("detected_at").defaultNow().notNull(),
+export const driftEvents = sqliteTable("drift_events", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  detectedAt: text("detected_at").notNull().default(sql`(datetime('now'))`),
   driftType: text("drift_type", {
     enum: ["cluster_bias", "stagnation", "divergence", "over_focus", "drift_drop"],
   }).notNull(),
   severity: text("severity", {
     enum: ["low", "mid", "high"],
   }).notNull(),
-  detailJson: jsonb("detail_json"),
-  acknowledged: boolean("acknowledged").notNull().default(false),
+  detailJson: text("detail_json"), // JSON string
+  acknowledged: integer("acknowledged", { mode: "boolean" }).notNull().default(false),
 });
 
 // ========== 修正層 ==========
 
-export const reviewSchedules = pgTable("review_schedules", {
-  noteId: uuid("note_id")
+export const reviewSchedules = sqliteTable("review_schedules", {
+  noteId: text("note_id")
     .primaryKey()
     .references(() => notes.id, { onDelete: "cascade" }),
-  nextReviewAt: timestamp("next_review_at").notNull(),
+  nextReviewAt: text("next_review_at").notNull(),
   intervalDays: real("interval_days").notNull().default(1),
   easinessFactor: real("easiness_factor").notNull().default(2.5),
   repetitionCount: integer("repetition_count").notNull().default(0),
   lastQuality: integer("last_quality"),
 });
 
-export const reviewSessions = pgTable("review_sessions", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  noteId: uuid("note_id")
+export const reviewSessions = sqliteTable("review_sessions", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  noteId: text("note_id")
     .notNull()
     .references(() => notes.id, { onDelete: "cascade" }),
-  reviewedAt: timestamp("reviewed_at").defaultNow().notNull(),
+  reviewedAt: text("reviewed_at").notNull().default(sql`(datetime('now'))`),
   quality: integer("quality").notNull(),
   response: text("response"),
 });

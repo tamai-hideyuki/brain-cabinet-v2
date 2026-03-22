@@ -5,7 +5,7 @@
 
 import { db } from "../../db/client.js";
 import { reviewSchedules, reviewSessions, notes } from "../../db/schema.js";
-import { eq, lte, sql, desc } from "drizzle-orm";
+import { eq, lte } from "drizzle-orm";
 
 /**
  * SM-2アルゴリズム
@@ -63,7 +63,7 @@ export async function getNextReviews(limit = 10) {
     })
     .from(reviewSchedules)
     .innerJoin(notes, eq(reviewSchedules.noteId, notes.id))
-    .where(lte(reviewSchedules.nextReviewAt, now))
+    .where(lte(reviewSchedules.nextReviewAt, now.toISOString()))
     .orderBy(reviewSchedules.nextReviewAt)
     .limit(limit);
 
@@ -115,7 +115,7 @@ export async function submitReview(params: {
       easinessFactor: updated.easinessFactor,
       repetitionCount: updated.repetitionCount,
       lastQuality: quality,
-      nextReviewAt: nextReview,
+      nextReviewAt: nextReview.toISOString(),
     })
     .where(eq(reviewSchedules.noteId, noteId));
 
